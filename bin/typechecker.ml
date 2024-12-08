@@ -50,11 +50,41 @@ let typ_of_unop : Ast.unop -> Ast.ty * Ast.ty = function
      (Don't forget about OCaml's 'and' keyword.)
 *)
 let rec subtype (h : Tctxt.t) (t1 : Ast.ty) (t2 : Ast.ty) : bool =
-  failwith "todo: subtype"
+  match t1, t2 with
+  | TInt, TInt -> true
+  | TBool, TBool -> true
+  | TNullRef ref1, TNullRef ref2 | TRef ref1, TRef ref2 | TRef ref1, TNullRef ref2 ->
+    subtype_ref h ref1 ref2
+  | _ -> false
 
 (* Decides whether H |-r ref1 <: ref2 *)
 and subtype_ref (h : Tctxt.t) (ref1 : Ast.rty) (ref2 : Ast.rty) : bool =
-  failwith "todo: subtype_ref"
+  match ref1, ref2 with
+  | RString, RString -> true
+  (* TODO: t1 <: t2 => t1[] <: t2[] ? *)
+  | RArray t1, RArray t2 -> if t1 = t2 then true else false
+  | RStruct s1, RStruct s2 ->
+    let fs1 = lookup_struct_option s1 h
+    and fs2 = lookup_struct_option s2 h in
+    if fs1 = None || fs2 = None
+    then false
+    else (
+      let fs1 = Option.get fs1
+      and fs2 = Option.get fs2 in
+      List.for_all (fun f2 -> List.exists (fun f1 -> f1 = f2) fs1) fs2)
+  | RFun (ts, rt1), RFun (ts', rt2) ->
+    if List.length ts <> List.length ts'
+    then false
+    else (
+      let t_t's = List.combine ts ts' in
+      List.for_all (fun (t, t') -> subtype h t' t) t_t's && subtype_ret h rt1 rt2)
+  | _ -> false
+
+and subtype_ret (h : Tctxt.t) (rt1 : Ast.ret_ty) (rt2 : Ast.ret_ty) : bool =
+  match rt1, rt2 with
+  | RetVoid, RetVoid -> true
+  | RetVal t1, RetVal t2 -> subtype h t1 t2
+  | _ -> false
 ;;
 
 (* well-formed types -------------------------------------------------------- *)
