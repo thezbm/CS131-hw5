@@ -49,11 +49,11 @@ let typ_of_unop : Ast.unop -> Ast.ty * Ast.ty = function
      relation. We have included a template for subtype_ref to get you started.
      (Don't forget about OCaml's 'and' keyword.)
 *)
-let rec subtype (c : Tctxt.t) (t1 : Ast.ty) (t2 : Ast.ty) : bool =
+let rec subtype (h : Tctxt.t) (t1 : Ast.ty) (t2 : Ast.ty) : bool =
   failwith "todo: subtype"
 
 (* Decides whether H |-r ref1 <: ref2 *)
-and subtype_ref (c : Tctxt.t) (t1 : Ast.rty) (t2 : Ast.rty) : bool =
+and subtype_ref (h : Tctxt.t) (ref1 : Ast.rty) (ref2 : Ast.rty) : bool =
   failwith "todo: subtype_ref"
 ;;
 
@@ -209,7 +209,7 @@ let typecheck_fdecl (tc : Tctxt.t) (f : Ast.fdecl) (l : 'a Ast.node) : unit =
    constants, but can mention only other global values that were declared earlier
 *)
 
-let create_struct_ctxt (p : Ast.prog) : Tctxt.t =
+let create_struct_ctxt (h1 : Tctxt.t) (p : Ast.prog) : Tctxt.t =
   let rec create_struct_ctxt_aux (h1 : Tctxt.t) (p : Ast.prog) : Tctxt.t =
     match p with
     | [] -> Tctxt.empty
@@ -224,10 +224,11 @@ let create_struct_ctxt (p : Ast.prog) : Tctxt.t =
       in
       create_struct_ctxt_aux h2 p'
   in
-  create_struct_ctxt_aux Tctxt.empty p
+  let h2 = create_struct_ctxt_aux Tctxt.empty p in
+  h2
 ;;
 
-let create_function_ctxt (tc : Tctxt.t) (p : Ast.prog) : Tctxt.t =
+let create_function_ctxt (h_g1 : Tctxt.t) (p : Ast.prog) : Tctxt.t =
   let rec create_function_ctxt_aux (h_g1 : Tctxt.t) (p : Ast.prog) : Tctxt.t =
     match p with
     | [] -> Tctxt.empty
@@ -236,7 +237,7 @@ let create_function_ctxt (tc : Tctxt.t) (p : Ast.prog) : Tctxt.t =
         match d with
         | Gtdecl _ | Gvdecl _ -> h_g1
         | Gfdecl ({ elt = { frtyp; fname = f; args } as fd } as l) ->
-          typecheck_fdecl tc fd l;
+          typecheck_fdecl h_g1 fd l;
           let args_typs = List.map (fun (arg_typ, _) -> arg_typ) args in
           let t = TRef (RFun (args_typs, frtyp)) in
           (match lookup_global_option f h_g1 with
@@ -245,10 +246,11 @@ let create_function_ctxt (tc : Tctxt.t) (p : Ast.prog) : Tctxt.t =
       in
       create_function_ctxt_aux h_g2 p'
   in
-  create_function_ctxt_aux tc p
+  let h_g2 = create_function_ctxt_aux h_g1 p in
+  h_g2
 ;;
 
-let create_global_ctxt (tc : Tctxt.t) (p : Ast.prog) : Tctxt.t =
+let create_global_ctxt (h_g1 : Tctxt.t) (p : Ast.prog) : Tctxt.t =
   let rec create_global_ctxt_aux (h_g1 : Tctxt.t) (p : Ast.prog) : Tctxt.t =
     match p with
     | [] -> Tctxt.empty
@@ -264,14 +266,15 @@ let create_global_ctxt (tc : Tctxt.t) (p : Ast.prog) : Tctxt.t =
       in
       create_global_ctxt_aux h_g2 p'
   in
-  create_global_ctxt_aux tc p
+  let h_g2 = create_global_ctxt_aux h_g1 p in
+  h_g2
 ;;
 
 (* This function implements the |- prog and the H ; G |- prog
    rules of the oat.pdf specification.
 *)
 let typecheck_program (p : Ast.prog) : unit =
-  let sc = create_struct_ctxt p in
+  let sc = create_struct_ctxt Tctxt.empty p in
   let fc = create_function_ctxt sc p in
   let tc = create_global_ctxt fc p in
   List.iter
