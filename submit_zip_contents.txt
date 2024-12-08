@@ -1,3 +1,4 @@
 bin/frontend.ml
 bin/typechecker.ml
-
+test/studenttests.ml
+test/studentprograms/*
