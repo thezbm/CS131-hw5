@@ -102,8 +102,27 @@ and subtype_ret (h : Tctxt.t) (rt1 : Ast.ret_ty) (rt2 : Ast.ret_ty) : bool =
 
    - tc contains the structure definition context
 *)
-let rec typecheck_ty (l : 'a Ast.node) (tc : Tctxt.t) (t : Ast.ty) : unit =
-  failwith "todo: implement typecheck_ty"
+let rec typecheck_ty (l : 'a Ast.node) (h : Tctxt.t) (t : Ast.ty) : unit =
+  match t with
+  | TInt | TBool -> ()
+  | TRef ref | TNullRef ref -> typecheck_ref l h ref
+
+and typecheck_ref (l : 'a Ast.node) (h : Tctxt.t) (ref : Ast.rty) : unit =
+  match ref with
+  | RString -> ()
+  | RArray t -> typecheck_ty l h t
+  | RStruct s ->
+    (match lookup_struct_option s h with
+     | None -> type_error l ("Undefined struct type: " ^ s)
+     | Some fs -> List.iter (fun f -> typecheck_ty l h f.ftyp) fs)
+  | RFun (ts, rt) ->
+    List.iter (fun t -> typecheck_ty l h t) ts;
+    typecheck_ret l h rt
+
+and typecheck_ret (l : 'a Ast.node) (h : Tctxt.t) (rt : Ast.ret_ty) : unit =
+  match rt with
+  | RetVoid -> ()
+  | RetVal t -> typecheck_ty l h t
 ;;
 
 (* A helper function to determine whether a type allows the null value *)
