@@ -190,9 +190,9 @@ let typecheck_fdecl (tc : Tctxt.t) (f : Ast.fdecl) (l : 'a Ast.node) : unit =
    judgments that create the global typechecking context.
 
    create_struct_ctxt: - adds all the struct types to the struct 'H'
-   context (checking to see that there are no duplicate fields
+   context (checking to see that their names are distinct)
 
-   H |-s prog ==> H'
+   H1 |-s prog ==> H2
 
    create_function_ctxt: - adds the the function identifiers and their
    types to the 'G' context (ensuring that there are no redeclared
