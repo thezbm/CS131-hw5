@@ -209,14 +209,62 @@ let typecheck_fdecl (tc : Tctxt.t) (f : Ast.fdecl) (l : 'a Ast.node) : unit =
    constants, but can mention only other global values that were declared earlier
 *)
 
-let create_struct_ctxt (p : Ast.prog) : Tctxt.t = failwith "todo: create_struct_ctxt"
+let create_struct_ctxt (p : Ast.prog) : Tctxt.t =
+  let rec create_struct_ctxt_aux (h1 : Tctxt.t) (p : Ast.prog) : Tctxt.t =
+    match p with
+    | [] -> Tctxt.empty
+    | d :: p' ->
+      let h2 =
+        match d with
+        | Gvdecl _ | Gfdecl _ -> h1
+        | Gtdecl ({ elt = s, fs } as l) ->
+          (match lookup_struct_option s h1 with
+           | Some _ -> type_error l ("Duplicate struct type: " ^ s)
+           | None -> add_struct h1 s fs)
+      in
+      create_struct_ctxt_aux h2 p'
+  in
+  create_struct_ctxt_aux Tctxt.empty p
+;;
 
 let create_function_ctxt (tc : Tctxt.t) (p : Ast.prog) : Tctxt.t =
-  failwith "todo: create_function_ctxt"
+  let rec create_function_ctxt_aux (h_g1 : Tctxt.t) (p : Ast.prog) : Tctxt.t =
+    match p with
+    | [] -> Tctxt.empty
+    | d :: p' ->
+      let h_g2 =
+        match d with
+        | Gtdecl _ | Gvdecl _ -> h_g1
+        | Gfdecl ({ elt = { frtyp; fname = f; args } as fd } as l) ->
+          typecheck_fdecl tc fd l;
+          let args_typs = List.map (fun (arg_typ, _) -> arg_typ) args in
+          let t = TRef (RFun (args_typs, frtyp)) in
+          (match lookup_global_option f h_g1 with
+           | Some _ -> type_error l ("Duplicate function: " ^ f)
+           | None -> add_global h_g1 f t)
+      in
+      create_function_ctxt_aux h_g2 p'
+  in
+  create_function_ctxt_aux tc p
 ;;
 
 let create_global_ctxt (tc : Tctxt.t) (p : Ast.prog) : Tctxt.t =
-  failwith "todo: create_function_ctxt"
+  let rec create_global_ctxt_aux (h_g1 : Tctxt.t) (p : Ast.prog) : Tctxt.t =
+    match p with
+    | [] -> Tctxt.empty
+    | d :: p' ->
+      let h_g2 =
+        match d with
+        | Gtdecl _ | Gfdecl _ -> h_g1
+        | Gvdecl ({ elt = { name = x; init = gexp } } as l) ->
+          let t = typecheck_exp h_g1 gexp in
+          (match lookup_global_option x h_g1 with
+           | Some _ -> type_error l ("Duplicate global variable: " ^ x)
+           | None -> add_global h_g1 x t)
+      in
+      create_global_ctxt_aux h_g2 p'
+  in
+  create_global_ctxt_aux tc p
 ;;
 
 (* This function implements the |- prog and the H ; G |- prog
@@ -227,10 +275,9 @@ let typecheck_program (p : Ast.prog) : unit =
   let fc = create_function_ctxt sc p in
   let tc = create_global_ctxt fc p in
   List.iter
-    (fun p ->
-      match p with
+    (function
+      | Gvdecl _ -> ()
       | Gfdecl ({ elt = f } as l) -> typecheck_fdecl tc f l
-      | Gtdecl ({ elt = id, fs } as l) -> typecheck_tdecl tc id fs l
-      | _ -> ())
+      | Gtdecl ({ elt = id, fs } as l) -> typecheck_tdecl tc id fs l)
     p
 ;;
