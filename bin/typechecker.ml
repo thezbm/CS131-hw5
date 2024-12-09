@@ -294,12 +294,12 @@ let rec typecheck_exp (h_g_l : Tctxt.t) (e : Ast.exp node) : Ast.ty =
    This function should implement the statment typechecking rules from oat.pdf.
 
    Inputs:
-   - tc: the type context
-   - s: the statement node
-   - to_ret: the desired return type (from the function declaration)
+   - h_g_l1: the type context H;G;L1
+   - rt: the desired return type (from the function declaration)
+   - stmt: the statement node
 
    Returns:
-   - the new type context (which includes newly declared variables in scope
+   - the new type context L2 (which includes newly declared variables in scope
      after this statement)
 
    - A boolean indicating the return behavior of a statement:
@@ -325,7 +325,7 @@ let rec typecheck_exp (h_g_l : Tctxt.t) (e : Ast.exp node) : Ast.ty =
    - You will probably find it convenient to add a helper function that implements the
      block typecheck rules.
 *)
-let rec typecheck_stmt (tc : Tctxt.t) (s : Ast.stmt node) (to_ret : ret_ty)
+let rec typecheck_stmt (h_g_l1 : Tctxt.t) (rt : ret_ty) (stmt : Ast.stmt node)
   : Tctxt.t * bool
   =
   failwith "todo: implement typecheck_stmt"
@@ -357,8 +357,37 @@ let typecheck_tdecl (tc : Tctxt.t) (id : id) (fs : field list) (l : 'a Ast.node)
    - typechecks the body of the function (passing in the expected return type)
    - checks that the function actually returns
 *)
-let typecheck_fdecl (tc : Tctxt.t) (f : Ast.fdecl) (l : 'a Ast.node) : unit =
-  failwith "todo: typecheck_fdecl"
+let rec typecheck_fdecl (h_g : Tctxt.t) (fdecl : Ast.fdecl) (l : 'a Ast.node) : unit =
+  let { frtyp = rt; fname = f; args = t_xs; body = block } = fdecl in
+  let h_g_l =
+    List.fold_left
+      (fun h_g_l (t, x) ->
+        if lookup_local_option x h_g_l <> None
+        then type_error l ("Duplicate parameter: " ^ x);
+        add_local h_g_l x t)
+      h_g
+      t_xs
+  in
+  typecheck_block h_g_l rt block true l
+
+and typecheck_block
+  (h_g_l : Tctxt.t)
+  (rt : ret_ty)
+  (block : Ast.block)
+  (returns : bool)
+  (l : 'a Ast.node)
+  : unit
+  =
+  let h_g_l0, stmts = h_g_l, block in
+  let _ln, r =
+    List.fold_left
+      (fun (h_g_l, r) stmt ->
+        if r then type_error l "Unexpected must-return statement";
+        typecheck_stmt h_g_l rt stmt)
+      (h_g_l0, false)
+      stmts
+  in
+  if returns <> r then type_error l "Block does not return"
 ;;
 
 (* creating the typchecking context ----------------------------------------- *)
