@@ -12,6 +12,20 @@ let type_error (l : 'a node) (err : string) =
   raise (TypeError (Printf.sprintf "[%d, %d] %s" s e err))
 ;;
 
+let unexpected_type (l : 'a node) (t : Ast.ty) =
+  type_error l ("Type error: unexpected type" ^ string_of_ty t)
+
+and assert_type (l : 'a node) (t : Ast.ty) (t' : Ast.ty) =
+  if not (t = t')
+  then
+    type_error
+      l
+      (Printf.sprintf
+         "Type error: expected %s, got %s"
+         (string_of_ty t')
+         (string_of_ty t))
+;;
+
 (* initial context: G0 ------------------------------------------------------ *)
 (* The Oat types of the Oat built-in functions *)
 let builtins =
@@ -87,6 +101,18 @@ and subtype_ret (h : Tctxt.t) (rt1 : Ast.ret_ty) (rt2 : Ast.ret_ty) : bool =
   | _ -> false
 ;;
 
+(* A helper function for subtype assertion. *)
+let assert_subtype (l : 'a node) (h : Tctxt.t) (t1 : Ast.ty) (t2 : Ast.ty) =
+  if not (subtype h t1 t2)
+  then
+    type_error
+      l
+      (Printf.sprintf
+         "Subtyping error: expected %s </: %s"
+         (string_of_ty t1)
+         (string_of_ty t2))
+;;
+
 (* well-formed types -------------------------------------------------------- *)
 (* Implement a (set of) functions that check that types are well formed according
    to the H |- t and related inference rules
@@ -156,8 +182,110 @@ let is_nullable_ty (t : Ast.ty) : bool =
    declaration struct T { a:int; b:int; c:int } The expression new T {b=3; c=4;
    a=1} is well typed.  (You should sort the fields to compare them.)
 *)
-let rec typecheck_exp (c : Tctxt.t) (e : Ast.exp node) : Ast.ty =
-  failwith "todo: implement typecheck_exp"
+let rec typecheck_exp (h_g_l : Tctxt.t) (e : Ast.exp node) : Ast.ty =
+  match e.elt with
+  | CNull ref ->
+    typecheck_ty e h_g_l (TRef ref);
+    TNullRef ref
+  | CBool true | CBool false -> TBool
+  | CInt _ -> TInt
+  | CStr _ -> TRef RString
+  | Id id ->
+    (match lookup_local_option id h_g_l with
+     | None ->
+       (match lookup_global_option id h_g_l with
+        | None -> type_error e ("Undefined identifier: " ^ id)
+        | Some t -> t)
+     | Some t -> t)
+  | CArr (t, exps) ->
+    typecheck_ty e h_g_l t;
+    exps
+    |> List.map (typecheck_exp h_g_l)
+    |> List.iter (fun ti -> assert_subtype e h_g_l ti t);
+    t
+  | NewArr (t, exp1) ->
+    typecheck_ty e h_g_l t;
+    assert_type e (typecheck_exp h_g_l exp1) TInt;
+    (match t with
+     | TInt | TBool | TNullRef _ -> ()
+     | _ -> unexpected_type e t);
+    TRef (RArray t)
+  | NewArrInit (t, exp1, x, exp2) ->
+    typecheck_ty e h_g_l t;
+    assert_type e (typecheck_exp h_g_l exp1) TInt;
+    (match lookup_local_option x h_g_l with
+     | Some _ -> type_error e ("Identifier already defined in local context: " ^ x)
+     | None ->
+       let h_g_l' = add_local h_g_l x TInt in
+       let t' = typecheck_exp h_g_l' exp2 in
+       assert_subtype e h_g_l t' t);
+    TRef (RArray t)
+  | Index (exp1, exp2) ->
+    (match typecheck_exp h_g_l exp1 with
+     | TRef (RArray t) ->
+       assert_type e (typecheck_exp h_g_l exp2) TInt;
+       t
+     | t -> unexpected_type e t)
+  | Length exp ->
+    (match typecheck_exp h_g_l exp with
+     | TRef (RArray _) -> TInt
+     | t -> unexpected_type e t)
+  | CStruct (s, x_exps) ->
+    (match lookup_struct_option s h_g_l with
+     | None -> type_error e ("Undefined struct type: " ^ s)
+     | Some fs ->
+       let x_exps = List.sort (fun (x1, _) (x2, _) -> String.compare x1 x2) x_exps in
+       let fs = List.sort (fun f1 f2 -> String.compare f1.fieldName f2.fieldName) fs in
+       List.iter2
+         (fun (x, exp) f ->
+           if x <> f.fieldName
+           then type_error e ("Missing field: " ^ f.fieldName)
+           else (
+             let t', t = typecheck_exp h_g_l exp, f.ftyp in
+             assert_subtype e h_g_l t' t))
+         x_exps
+         fs;
+       TRef (RStruct s))
+  | Proj (exp, x) ->
+    (match typecheck_exp h_g_l exp with
+     | TRef (RStruct s) ->
+       (match lookup_struct_option s h_g_l with
+        | None -> type_error e ("Undefined struct type: " ^ s)
+        | Some _ ->
+          (match lookup_field_option s x h_g_l with
+           | None -> type_error e ("Undefined field: " ^ x)
+           | Some t -> t))
+     | t -> unexpected_type e t)
+  | Call (exp, exps) ->
+    (match typecheck_exp h_g_l exp with
+     | TRef (RFun (ts, t)) ->
+       let t's = List.map (typecheck_exp h_g_l) exps in
+       if List.length ts <> List.length t's
+       then type_error e "Incorrect number of arguments"
+       else (
+         List.iter2 (fun t' t -> assert_subtype e h_g_l t' t) t's ts;
+         match t with
+         (* TODO: is void return valid? *)
+         | RetVoid -> type_error e "Function call does not return a value"
+         | RetVal t -> t)
+     | t -> unexpected_type e t)
+  | Bop (binop, exp1, exp2) ->
+    (match binop with
+     | Eq | Neq ->
+       let t1, t2 = typecheck_exp h_g_l exp1, typecheck_exp h_g_l exp2 in
+       assert_subtype e h_g_l t1 t2;
+       assert_subtype e h_g_l t2 t1;
+       TBool
+     | _ ->
+       let t1, t2, t = typ_of_binop binop in
+       assert_subtype e h_g_l (typecheck_exp h_g_l exp1) t1;
+       assert_subtype e h_g_l (typecheck_exp h_g_l exp2) t2;
+       t)
+  | Uop (uop, exp) ->
+    let t, rt = typ_of_unop uop in
+    assert_type e rt t;
+    assert_type e (typecheck_exp h_g_l exp) t;
+    t
 ;;
 
 (* statements --------------------------------------------------------------- *)
@@ -226,7 +354,7 @@ let typecheck_tdecl (tc : Tctxt.t) (id : id) (fs : field list) (l : 'a Ast.node)
    - ensures formal parameters are distinct
    - extends the local context with the types of the formal parameters to the
      function
-   - typechecks the body of the function (passing in the expected return type
+   - typechecks the body of the function (passing in the expected return type)
    - checks that the function actually returns
 *)
 let typecheck_fdecl (tc : Tctxt.t) (f : Ast.fdecl) (l : 'a Ast.node) : unit =
@@ -287,8 +415,8 @@ let create_function_ctxt (h_g1 : Tctxt.t) (p : Ast.prog) : Tctxt.t =
         | Gtdecl _ | Gvdecl _ -> h_g1
         | Gfdecl ({ elt = { frtyp; fname = f; args } as fd } as l) ->
           typecheck_fdecl h_g1 fd l;
-          let args_typs = List.map (fun (arg_typ, _) -> arg_typ) args in
-          let t = TRef (RFun (args_typs, frtyp)) in
+          let arg_typs = List.map (fun (arg_typ, _) -> arg_typ) args in
+          let t = TRef (RFun (arg_typs, frtyp)) in
           (match lookup_global_option f h_g1 with
            | Some _ -> type_error l ("Duplicate function: " ^ f)
            | None -> add_global h_g1 f t)
