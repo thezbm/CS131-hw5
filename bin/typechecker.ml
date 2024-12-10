@@ -13,7 +13,7 @@ let type_error (l : 'a node) (err : string) =
 ;;
 
 let unexpected_type (l : 'a node) (t : Ast.ty) =
-  type_error l ("Type error: unexpected type" ^ string_of_ty t)
+  type_error l ("Type error: unexpected type " ^ string_of_ty t)
 
 and assert_type (l : 'a node) (t : Ast.ty) (t' : Ast.ty) =
   if not (t = t')
@@ -101,16 +101,13 @@ and subtype_ret (h : Tctxt.t) (rt1 : Ast.ret_ty) (rt2 : Ast.ret_ty) : bool =
   | _ -> false
 ;;
 
-(* A helper function for subtype assertion. *)
+(* Helper function for subtype assertions. *)
 let assert_subtype (l : 'a node) (h : Tctxt.t) (t1 : Ast.ty) (t2 : Ast.ty) =
   if not (subtype h t1 t2)
   then
     type_error
       l
-      (Printf.sprintf
-         "Subtyping error: expected %s </: %s"
-         (string_of_ty t1)
-         (string_of_ty t2))
+      (Printf.sprintf "Subtyping error: %s </: %s" (string_of_ty t1) (string_of_ty t2))
 ;;
 
 (* well-formed types -------------------------------------------------------- *)
@@ -199,37 +196,35 @@ let rec typecheck_exp (h_g_l : Tctxt.t) (e : Ast.exp node) : Ast.ty =
      | Some t -> t)
   | CArr (t, exps) ->
     typecheck_ty e h_g_l t;
-    exps
-    |> List.map (typecheck_exp h_g_l)
-    |> List.iter (fun ti -> assert_subtype e h_g_l ti t);
+    List.iter (fun exp -> assert_subtype exp h_g_l (typecheck_exp h_g_l exp) t) exps;
     t
   | NewArr (t, exp1) ->
     typecheck_ty e h_g_l t;
-    assert_type e (typecheck_exp h_g_l exp1) TInt;
+    assert_type exp1 (typecheck_exp h_g_l exp1) TInt;
     (match t with
      | TInt | TBool | TNullRef _ -> ()
-     | _ -> unexpected_type e t);
+     | _ -> unexpected_type exp1 t);
     TRef (RArray t)
   | NewArrInit (t, exp1, x, exp2) ->
     typecheck_ty e h_g_l t;
-    assert_type e (typecheck_exp h_g_l exp1) TInt;
+    assert_type exp1 (typecheck_exp h_g_l exp1) TInt;
     (match lookup_local_option x h_g_l with
      | Some _ -> type_error e ("Identifier already defined in local context: " ^ x)
      | None ->
        let h_g_l' = add_local h_g_l x TInt in
        let t' = typecheck_exp h_g_l' exp2 in
-       assert_subtype e h_g_l t' t);
+       assert_subtype exp2 h_g_l t' t);
     TRef (RArray t)
   | Index (exp1, exp2) ->
     (match typecheck_exp h_g_l exp1 with
      | TRef (RArray t) ->
-       assert_type e (typecheck_exp h_g_l exp2) TInt;
+       assert_type exp2 (typecheck_exp h_g_l exp2) TInt;
        t
-     | t -> unexpected_type e t)
+     | t -> unexpected_type exp1 t)
   | Length exp ->
     (match typecheck_exp h_g_l exp with
      | TRef (RArray _) -> TInt
-     | t -> unexpected_type e t)
+     | t -> unexpected_type exp t)
   | CStruct (s, x_exps) ->
     (match lookup_struct_option s h_g_l with
      | None -> type_error e ("Undefined struct type: " ^ s)
@@ -242,7 +237,7 @@ let rec typecheck_exp (h_g_l : Tctxt.t) (e : Ast.exp node) : Ast.ty =
            then type_error e ("Missing field: " ^ f.fieldName)
            else (
              let t', t = typecheck_exp h_g_l exp, f.ftyp in
-             assert_subtype e h_g_l t' t))
+             assert_subtype exp h_g_l t' t))
          x_exps
          fs;
        TRef (RStruct s))
@@ -250,41 +245,43 @@ let rec typecheck_exp (h_g_l : Tctxt.t) (e : Ast.exp node) : Ast.ty =
     (match typecheck_exp h_g_l exp with
      | TRef (RStruct s) ->
        (match lookup_struct_option s h_g_l with
-        | None -> type_error e ("Undefined struct type: " ^ s)
+        | None -> type_error exp ("Undefined struct type: " ^ s)
         | Some _ ->
           (match lookup_field_option s x h_g_l with
-           | None -> type_error e ("Undefined field: " ^ x)
+           | None -> type_error exp ("Undefined field: " ^ x)
            | Some t -> t))
-     | t -> unexpected_type e t)
+     | t -> unexpected_type exp t)
   | Call (exp, exps) ->
     (match typecheck_exp h_g_l exp with
      | TRef (RFun (ts, t)) ->
-       let t's = List.map (typecheck_exp h_g_l) exps in
-       if List.length ts <> List.length t's
+       if List.length ts <> List.length exps
        then type_error e "Incorrect number of arguments"
        else (
-         List.iter2 (fun t' t -> assert_subtype e h_g_l t' t) t's ts;
+         List.iter2
+           (fun exp t -> assert_subtype exp h_g_l (typecheck_exp h_g_l exp) t)
+           exps
+           ts;
          match t with
          (* TODO: is void return valid? *)
-         | RetVoid -> type_error e "Unexpected void return"
+         | RetVoid -> type_error exp "Unexpected void return"
          | RetVal t -> t)
-     | t -> unexpected_type e t)
+     | t -> unexpected_type exp t)
   | Bop (binop, exp1, exp2) ->
     (match binop with
      | Eq | Neq ->
        let t1, t2 = typecheck_exp h_g_l exp1, typecheck_exp h_g_l exp2 in
-       assert_subtype e h_g_l t1 t2;
-       assert_subtype e h_g_l t2 t1;
+       assert_subtype exp1 h_g_l t1 t2;
+       assert_subtype exp2 h_g_l t2 t1;
        TBool
      | _ ->
        let t1, t2, t = typ_of_binop binop in
-       assert_subtype e h_g_l (typecheck_exp h_g_l exp1) t1;
-       assert_subtype e h_g_l (typecheck_exp h_g_l exp2) t2;
+       assert_subtype exp1 h_g_l (typecheck_exp h_g_l exp1) t1;
+       assert_subtype exp2 h_g_l (typecheck_exp h_g_l exp2) t2;
        t)
   | Uop (uop, exp) ->
     let t, rt = typ_of_unop uop in
     assert_type e rt t;
-    assert_type e (typecheck_exp h_g_l exp) t;
+    assert_type exp (typecheck_exp h_g_l exp) t;
     t
 ;;
 
@@ -347,21 +344,23 @@ let rec typecheck_stmt (h_g_l1 : Tctxt.t) (rt : ret_ty) (stmt : Ast.stmt node)
     (match lhs.elt with
      | Id id ->
        (match lookup_global_option id h_g_l1 with
-        | Some (TRef (RFun _)) -> type_error stmt "Cannot assign to global function"
+        | Some (TRef (RFun _)) -> type_error lhs "Trying to assign to a global function"
         | _ -> ())
      | _ -> ());
-    assert_subtype stmt h_g_l1 (typecheck_exp h_g_l1 exp) (typecheck_exp h_g_l1 lhs);
+    assert_subtype exp h_g_l1 (typecheck_exp h_g_l1 exp) (typecheck_exp h_g_l1 lhs);
     h_g_l1, false
   | Decl vdecl -> typecheck_vdecl h_g_l1 vdecl stmt, false
   | SCall (exp, exps) ->
     (match typecheck_exp h_g_l1 exp with
      | TRef (RFun (ts, RetVoid)) ->
-       let t's = List.map (typecheck_exp h_g_l1) exps in
-       List.iter2 (fun t' t -> assert_subtype stmt h_g_l1 t' t) t's ts;
+       List.iter2
+         (fun exp t -> assert_subtype exp h_g_l1 (typecheck_exp h_g_l1 exp) t)
+         exps
+         ts;
        h_g_l1, false
-     | t -> unexpected_type stmt t)
+     | t -> unexpected_type exp t)
   | If (exp, block1, block2) ->
-    assert_type stmt (typecheck_exp h_g_l1 exp) TBool;
+    assert_type exp (typecheck_exp h_g_l1 exp) TBool;
     let r1, r2 = typecheck_block h_g_l1 rt block1, typecheck_block h_g_l1 rt block2 in
     h_g_l1, r1 && r2
   | Cast (ref, x, exp, block1, block2) ->
@@ -371,18 +370,21 @@ let rec typecheck_stmt (h_g_l1 : Tctxt.t) (rt : ret_ty) (stmt : Ast.stmt node)
        let r1 = typecheck_block (add_local h_g_l1 x (TNullRef ref)) rt block1
        and r2 = typecheck_block h_g_l1 rt block2 in
        h_g_l1, r1 && r2
-     | t -> unexpected_type stmt t)
+     | t -> unexpected_type exp t)
   | While (exp, block) ->
-    assert_type stmt (typecheck_exp h_g_l1 exp) TBool;
+    assert_type exp (typecheck_exp h_g_l1 exp) TBool;
     let _r = typecheck_block h_g_l1 rt block |> ignore in
     h_g_l1, false
   | For (vdecls, exp_opt, stmt_opt, block) ->
     let h_g_l2 = typecheck_vdecls h_g_l1 vdecls stmt in
     if exp_opt <> None
-    then assert_type stmt (typecheck_exp h_g_l2 (Option.get exp_opt)) TBool;
+    then (
+      let exp = Option.get exp_opt in
+      assert_type exp (typecheck_exp h_g_l2 exp) TBool);
     if stmt_opt <> None
     then (
-      let _h_g_l3, r = typecheck_stmt h_g_l2 rt (Option.get stmt_opt) in
+      let stmt = Option.get stmt_opt in
+      let _h_g_l3, r = typecheck_stmt h_g_l2 rt stmt in
       if r then type_error stmt "Unexpected must-return statement");
     let _r = typecheck_block h_g_l2 rt block in
     h_g_l1, false
@@ -390,9 +392,9 @@ let rec typecheck_stmt (h_g_l1 : Tctxt.t) (rt : ret_ty) (stmt : Ast.stmt node)
     (match exp with
      | Some exp ->
        (match rt with
-        | RetVoid -> type_error stmt "Unexpected return value"
+        | RetVoid -> type_error exp "Unexpected return value"
         | RetVal t ->
-          assert_subtype stmt h_g_l1 (typecheck_exp h_g_l1 exp) t;
+          assert_subtype exp h_g_l1 (typecheck_exp h_g_l1 exp) t;
           h_g_l1, true)
      | None ->
        (match rt with
