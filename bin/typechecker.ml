@@ -266,7 +266,7 @@ let rec typecheck_exp (h_g_l : Tctxt.t) (e : Ast.exp node) : Ast.ty =
          List.iter2 (fun t' t -> assert_subtype e h_g_l t' t) t's ts;
          match t with
          (* TODO: is void return valid? *)
-         | RetVoid -> type_error e "Function call does not return a value"
+         | RetVoid -> type_error e "Unexpected void return"
          | RetVal t -> t)
      | t -> unexpected_type e t)
   | Bop (binop, exp1, exp2) ->
@@ -290,6 +290,20 @@ let rec typecheck_exp (h_g_l : Tctxt.t) (e : Ast.exp node) : Ast.ty =
 
 (* statements --------------------------------------------------------------- *)
 
+let rec typecheck_vdecl (h_g_l1 : Tctxt.t) (vdecl : Ast.vdecl) (l : 'a Ast.node) : Tctxt.t
+  =
+  let x, exp = vdecl in
+  let t = typecheck_exp h_g_l1 exp in
+  match lookup_local_option x h_g_l1 with
+  | Some _ -> type_error l ("Identifier already defined in local context: " ^ x)
+  | None -> add_local h_g_l1 x t
+
+and typecheck_vdecls (h_g_l0 : Tctxt.t) (vdecls : Ast.vdecl list) (l : 'a Ast.node)
+  : Tctxt.t
+  =
+  List.fold_left (fun h_g_l vdecl -> typecheck_vdecl h_g_l vdecl l) h_g_l0 vdecls
+;;
+
 (* Typecheck a statement
    This function should implement the statment typechecking rules from oat.pdf.
 
@@ -308,7 +322,7 @@ let rec typecheck_exp (h_g_l : Tctxt.t) (e : Ast.exp node) : Ast.ty =
 
    in the branching statements, the return behavior of the branching
    statement is the conjunction of the return behavior of the two
-   branches: both both branches must definitely return in order for
+   branches: both branches must definitely return in order for
    the whole statement to definitely return.
 
    Intuitively: if one of the two branches of a conditional does not
@@ -328,7 +342,81 @@ let rec typecheck_exp (h_g_l : Tctxt.t) (e : Ast.exp node) : Ast.ty =
 let rec typecheck_stmt (h_g_l1 : Tctxt.t) (rt : ret_ty) (stmt : Ast.stmt node)
   : Tctxt.t * bool
   =
-  failwith "todo: implement typecheck_stmt"
+  match stmt.elt with
+  | Assn (lhs, exp) ->
+    (match lhs.elt with
+     | Id id ->
+       (match lookup_global_option id h_g_l1 with
+        | Some (TRef (RFun _)) -> type_error stmt "Cannot assign to global function"
+        | _ -> ())
+     | _ -> ());
+    assert_subtype stmt h_g_l1 (typecheck_exp h_g_l1 exp) (typecheck_exp h_g_l1 lhs);
+    h_g_l1, false
+  | Decl vdecl -> typecheck_vdecl h_g_l1 vdecl stmt, false
+  | SCall (exp, exps) ->
+    (match typecheck_exp h_g_l1 exp with
+     | TRef (RFun (ts, RetVoid)) ->
+       let t's = List.map (typecheck_exp h_g_l1) exps in
+       List.iter2 (fun t' t -> assert_subtype stmt h_g_l1 t' t) t's ts;
+       h_g_l1, false
+     | t -> unexpected_type stmt t)
+  | If (exp, block1, block2) ->
+    assert_type stmt (typecheck_exp h_g_l1 exp) TBool;
+    let r1, r2 = typecheck_block h_g_l1 rt block1, typecheck_block h_g_l1 rt block2 in
+    h_g_l1, r1 && r2
+  | Cast (ref, x, exp, block1, block2) ->
+    (match typecheck_exp h_g_l1 exp with
+     | TNullRef ref' ->
+       assert_subtype exp h_g_l1 (TNullRef ref') (TNullRef ref);
+       let r1 = typecheck_block (add_local h_g_l1 x (TNullRef ref)) rt block1
+       and r2 = typecheck_block h_g_l1 rt block2 in
+       h_g_l1, r1 && r2
+     | t -> unexpected_type stmt t)
+  | While (exp, block) ->
+    assert_type stmt (typecheck_exp h_g_l1 exp) TBool;
+    let _r = typecheck_block h_g_l1 rt block |> ignore in
+    h_g_l1, false
+  | For (vdecls, exp_opt, stmt_opt, block) ->
+    let h_g_l2 = typecheck_vdecls h_g_l1 vdecls stmt in
+    if exp_opt <> None
+    then assert_type stmt (typecheck_exp h_g_l2 (Option.get exp_opt)) TBool;
+    if stmt_opt <> None
+    then (
+      let _h_g_l3, r = typecheck_stmt h_g_l2 rt (Option.get stmt_opt) in
+      if r then type_error stmt "Unexpected must-return statement");
+    let _r = typecheck_block h_g_l2 rt block in
+    h_g_l1, false
+  | Ret exp ->
+    (match exp with
+     | Some exp ->
+       (match rt with
+        | RetVoid -> type_error stmt "Unexpected return value"
+        | RetVal t ->
+          assert_subtype stmt h_g_l1 (typecheck_exp h_g_l1 exp) t;
+          h_g_l1, true)
+     | None ->
+       (match rt with
+        | RetVal _ -> type_error stmt "Return type is not void"
+        | RetVoid -> h_g_l1, true))
+
+(* typecheck_block returns true if the block definitely returns *)
+and typecheck_block (h_g_l : Tctxt.t) (rt : ret_ty) (block : Ast.block) : bool =
+  let h_g_l0, stmts = h_g_l, block in
+  let _h_g_ln, r = typecheck_stmts h_g_l0 rt stmts in
+  r
+
+and typecheck_stmts (h_g_l0 : Tctxt.t) (rt : ret_ty) (stmts : Ast.stmt node list)
+  : Tctxt.t * bool
+  =
+  let ln, r =
+    List.fold_left
+      (fun (h_g_l, r) stmt ->
+        if r then type_error stmt "Unexpected must-return statement";
+        typecheck_stmt h_g_l rt stmt)
+      (h_g_l0, false)
+      stmts
+  in
+  ln, r
 ;;
 
 (* struct type declarations ------------------------------------------------- *)
@@ -368,26 +456,7 @@ let rec typecheck_fdecl (h_g : Tctxt.t) (fdecl : Ast.fdecl) (l : 'a Ast.node) : 
       h_g
       t_xs
   in
-  typecheck_block h_g_l rt block true l
-
-and typecheck_block
-  (h_g_l : Tctxt.t)
-  (rt : ret_ty)
-  (block : Ast.block)
-  (returns : bool)
-  (l : 'a Ast.node)
-  : unit
-  =
-  let h_g_l0, stmts = h_g_l, block in
-  let _ln, r =
-    List.fold_left
-      (fun (h_g_l, r) stmt ->
-        if r then type_error l "Unexpected must-return statement";
-        typecheck_stmt h_g_l rt stmt)
-      (h_g_l0, false)
-      stmts
-  in
-  if returns <> r then type_error l "Block does not return"
+  if not (typecheck_block h_g_l rt block) then type_error l "Function does not return"
 ;;
 
 (* creating the typchecking context ----------------------------------------- *)
