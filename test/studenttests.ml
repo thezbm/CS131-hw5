@@ -57,6 +57,22 @@ let my_unit_tests =
           |> add_struct "s2" [ mk_f "z" TInt; mk_f "y" TBool ]
         in
         if Typechecker.subtype h s1 s2 then () else failwith "should not fail" )
+  ; ( "subtype: s1 <: s2 where s2 is an empty struct"
+    , fun () ->
+        let h =
+          empty
+          |> add_struct "s1" [ mk_f "x" TInt; mk_f "y" TBool; mk_f "z" TInt ]
+          |> add_struct "s2" []
+        in
+        if Typechecker.subtype h s1 s2 then () else failwith "should not fail" )
+  ; ( "subtype: s1 <: s2 where both s1 and s2 are empty"
+    , fun () ->
+        let h =
+          empty
+          |> add_struct "s1" []
+          |> add_struct "s2" []
+        in
+        if Typechecker.subtype h s1 s2 then () else failwith "should not fail" )
   ; ( "subtype: int -> int <: int -> int"
     , fun () ->
         if Typechecker.subtype empty (mk_func [ TInt ] TInt) (mk_func [ TInt ] TInt)

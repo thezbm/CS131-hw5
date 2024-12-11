@@ -62,6 +62,11 @@ let typ_of_unop : Ast.unop -> Ast.ty * Ast.ty = function
      helper functions to implement the different judgments of the subtyping
      relation. We have included a template for subtype_ref to get you started.
      (Don't forget about OCaml's 'and' keyword.)
+
+   NOTE:
+   - subtype, subtype_ref, and subtype_ret will not raise errors
+   - when a struct type cannot be found in the context, subtype and subtype_ref
+     return false
 *)
 let rec subtype (h : Tctxt.t) (t1 : Ast.ty) (t2 : Ast.ty) : bool =
   match t1, t2 with
@@ -75,7 +80,6 @@ let rec subtype (h : Tctxt.t) (t1 : Ast.ty) (t2 : Ast.ty) : bool =
 and subtype_ref (h : Tctxt.t) (ref1 : Ast.rty) (ref2 : Ast.rty) : bool =
   match ref1, ref2 with
   | RString, RString -> true
-  (* TODO: t1 <: t2 => t1[] <: t2[] ? *)
   | RArray t1, RArray t2 -> if t1 = t2 then true else false
   | RStruct s1, RStruct s2 ->
     let fs1 = lookup_struct_option s1 h
@@ -135,9 +139,7 @@ and typecheck_ref (l : 'a Ast.node) (h : Tctxt.t) (ref : Ast.rty) : unit =
   | RString -> ()
   | RArray t -> typecheck_ty l h t
   | RStruct s ->
-    (match lookup_struct_option s h with
-     | None -> type_error l ("Undefined struct type: " ^ s)
-     | Some fs -> List.iter (fun f -> typecheck_ty l h f.ftyp) fs)
+    if lookup_struct_option s h = None then type_error l ("Undefined struct type: " ^ s)
   | RFun (ts, rt) ->
     List.iter (fun t -> typecheck_ty l h t) ts;
     typecheck_ret l h rt
@@ -197,7 +199,7 @@ let rec typecheck_exp (h_g_l : Tctxt.t) (e : Ast.exp node) : Ast.ty =
   | CArr (t, exps) ->
     typecheck_ty e h_g_l t;
     List.iter (fun exp -> assert_subtype exp h_g_l (typecheck_exp h_g_l exp) t) exps;
-    t
+    TRef (RArray t)
   | NewArr (t, exp1) ->
     typecheck_ty e h_g_l t;
     assert_type exp1 (typecheck_exp h_g_l exp1) TInt;
@@ -231,6 +233,8 @@ let rec typecheck_exp (h_g_l : Tctxt.t) (e : Ast.exp node) : Ast.ty =
      | Some fs ->
        let x_exps = List.sort (fun (x1, _) (x2, _) -> String.compare x1 x2) x_exps in
        let fs = List.sort (fun f1 f2 -> String.compare f1.fieldName f2.fieldName) fs in
+       if List.length x_exps <> List.length fs
+       then type_error e "Incorrect number of fields";
        List.iter2
          (fun (x, exp) f ->
            if x <> f.fieldName
@@ -262,7 +266,6 @@ let rec typecheck_exp (h_g_l : Tctxt.t) (e : Ast.exp node) : Ast.ty =
            exps
            ts;
          match t with
-         (* TODO: is void return valid? *)
          | RetVoid -> type_error exp "Unexpected void return"
          | RetVal t -> t)
      | t -> unexpected_type exp t)
@@ -344,7 +347,9 @@ let rec typecheck_stmt (h_g_l1 : Tctxt.t) (rt : ret_ty) (stmt : Ast.stmt node)
     (match lhs.elt with
      | Id id ->
        (match lookup_global_option id h_g_l1 with
-        | Some (TRef (RFun _)) -> type_error lhs "Trying to assign to a global function"
+        | Some (TRef (RFun _)) ->
+          if lookup_local_option id h_g_l1 = None
+          then type_error lhs ("Assigning to global function: " ^ id)
         | _ -> ())
      | _ -> ());
     assert_subtype exp h_g_l1 (typecheck_exp h_g_l1 exp) (typecheck_exp h_g_l1 lhs);
@@ -366,8 +371,8 @@ let rec typecheck_stmt (h_g_l1 : Tctxt.t) (rt : ret_ty) (stmt : Ast.stmt node)
   | Cast (ref, x, exp, block1, block2) ->
     (match typecheck_exp h_g_l1 exp with
      | TNullRef ref' ->
-       assert_subtype exp h_g_l1 (TNullRef ref') (TNullRef ref);
-       let r1 = typecheck_block (add_local h_g_l1 x (TNullRef ref)) rt block1
+       assert_subtype exp h_g_l1 (TRef ref') (TRef ref);
+       let r1 = typecheck_block (add_local h_g_l1 x (TRef ref)) rt block1
        and r2 = typecheck_block h_g_l1 rt block2 in
        h_g_l1, r1 && r2
      | t -> unexpected_type exp t)
@@ -489,14 +494,14 @@ let rec typecheck_fdecl (h_g : Tctxt.t) (fdecl : Ast.fdecl) (l : 'a Ast.node) : 
 let create_struct_ctxt (h1 : Tctxt.t) (p : Ast.prog) : Tctxt.t =
   let rec create_struct_ctxt_aux (h1 : Tctxt.t) (p : Ast.prog) : Tctxt.t =
     match p with
-    | [] -> Tctxt.empty
+    | [] -> h1
     | d :: p' ->
       let h2 =
         match d with
         | Gvdecl _ | Gfdecl _ -> h1
-        | Gtdecl ({ elt = s, fs } as l) ->
+        | Gtdecl ({ elt = s, fs } as tdecl) ->
           (match lookup_struct_option s h1 with
-           | Some _ -> type_error l ("Duplicate struct type: " ^ s)
+           | Some _ -> type_error tdecl ("Duplicate struct type: " ^ s)
            | None -> add_struct h1 s fs)
       in
       create_struct_ctxt_aux h2 p'
@@ -508,20 +513,30 @@ let create_struct_ctxt (h1 : Tctxt.t) (p : Ast.prog) : Tctxt.t =
 let create_function_ctxt (h_g1 : Tctxt.t) (p : Ast.prog) : Tctxt.t =
   let rec create_function_ctxt_aux (h_g1 : Tctxt.t) (p : Ast.prog) : Tctxt.t =
     match p with
-    | [] -> Tctxt.empty
+    | [] -> h_g1
     | d :: p' ->
       let h_g2 =
         match d with
         | Gtdecl _ | Gvdecl _ -> h_g1
-        | Gfdecl ({ elt = { frtyp; fname = f; args } as fd } as l) ->
-          typecheck_fdecl h_g1 fd l;
-          let arg_typs = List.map (fun (arg_typ, _) -> arg_typ) args in
-          let t = TRef (RFun (arg_typs, frtyp)) in
+        | Gfdecl fdecl ->
+          let f, t = typecheck_fsig h_g1 fdecl in
           (match lookup_global_option f h_g1 with
-           | Some _ -> type_error l ("Duplicate function: " ^ f)
+           | Some _ -> type_error fdecl ("Duplicate global function: " ^ f)
            | None -> add_global h_g1 f t)
       in
       create_function_ctxt_aux h_g2 p'
+  and typecheck_fsig (h : t) ({ elt = { frtyp = rt; fname = f; args = t_xs } } as fdecl)
+    : Ast.id * Ast.ty
+    =
+    typecheck_ret fdecl h rt;
+    let ts =
+      List.map
+        (fun (t, _x) ->
+          typecheck_ty fdecl h t;
+          t)
+        t_xs
+    in
+    f, TRef (RFun (ts, rt))
   in
   let h_g2 = create_function_ctxt_aux h_g1 p in
   h_g2
@@ -530,15 +545,15 @@ let create_function_ctxt (h_g1 : Tctxt.t) (p : Ast.prog) : Tctxt.t =
 let create_global_ctxt (h_g1 : Tctxt.t) (p : Ast.prog) : Tctxt.t =
   let rec create_global_ctxt_aux (h_g1 : Tctxt.t) (p : Ast.prog) : Tctxt.t =
     match p with
-    | [] -> Tctxt.empty
+    | [] -> h_g1
     | d :: p' ->
       let h_g2 =
         match d with
         | Gtdecl _ | Gfdecl _ -> h_g1
-        | Gvdecl ({ elt = { name = x; init = gexp } } as l) ->
+        | Gvdecl ({ elt = { name = x; init = gexp } } as gdecl) ->
           let t = typecheck_exp h_g1 gexp in
           (match lookup_global_option x h_g1 with
-           | Some _ -> type_error l ("Duplicate global variable: " ^ x)
+           | Some _ -> type_error gdecl ("Duplicate global variable: " ^ x)
            | None -> add_global h_g1 x t)
       in
       create_global_ctxt_aux h_g2 p'
@@ -551,13 +566,20 @@ let create_global_ctxt (h_g1 : Tctxt.t) (p : Ast.prog) : Tctxt.t =
    rules of the oat.pdf specification.
 *)
 let typecheck_program (p : Ast.prog) : unit =
-  let sc = create_struct_ctxt Tctxt.empty p in
-  let fc = create_function_ctxt sc p in
-  let tc = create_global_ctxt fc p in
+  let h = create_struct_ctxt Tctxt.empty p in
+  let h_g0 =
+    List.fold_left
+      (fun h_g (id, (arg_typs, ret_typ)) ->
+        add_global h_g id (TRef (RFun (arg_typs, ret_typ))))
+      h
+      builtins
+  in
+  let h_g1 = create_function_ctxt h_g0 p in
+  let h_g2 = create_global_ctxt h_g1 p in
   List.iter
     (function
       | Gvdecl _ -> ()
-      | Gfdecl ({ elt = f } as l) -> typecheck_fdecl tc f l
-      | Gtdecl ({ elt = id, fs } as l) -> typecheck_tdecl tc id fs l)
+      | Gfdecl ({ elt = f } as l) -> typecheck_fdecl h_g2 f l
+      | Gtdecl ({ elt = id, fs } as l) -> typecheck_tdecl h_g2 id fs l)
     p
 ;;
