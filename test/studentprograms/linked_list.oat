@@ -1,0 +1,37 @@
+struct Node {
+  string val;
+  Node? next
+}
+
+Node new_node(string val) {
+  return new Node{val=val; next=Node null};
+}
+
+Node node_prepend(Node node, string val) {
+  return new Node{val=val; next=node};
+}
+
+Node node_from_array(string[] arr) {
+  var len = length(arr);
+  var node = new_node(arr[len-1]);
+  for (var i = len-2; i >= 0; i = i-1;) {
+    node = node_prepend(node, arr[i]);
+  }
+  return node;
+}
+
+void print_ll(Node? node) {
+  if? (Node node = node) {
+    print_string(node.val);
+    print_string(" ");
+    print_ll(node.next);
+  }
+  return;
+}
+
+int program(int argc, string[] argv) {
+  var arr = new string[length(argv)-1]{i -> argv[i+1]};
+  var node = node_from_array(arr);
+  print_ll(node);
+  return 0;
+}

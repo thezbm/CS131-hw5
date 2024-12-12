@@ -67,11 +67,7 @@ let my_unit_tests =
         if Typechecker.subtype h s1 s2 then () else failwith "should not fail" )
   ; ( "subtype: s1 <: s2 where both s1 and s2 are empty"
     , fun () ->
-        let h =
-          empty
-          |> add_struct "s1" []
-          |> add_struct "s2" []
-        in
+        let h = empty |> add_struct "s1" [] |> add_struct "s2" [] in
         if Typechecker.subtype h s1 s2 then () else failwith "should not fail" )
   ; ( "subtype: int -> int <: int -> int"
     , fun () ->
@@ -119,12 +115,13 @@ let my_unit_tests =
   ]
 ;;
 
-let my_tests = [ "test/studentprograms/correct_global_struct.oat" ]
-let my_error_tests = [ "test/studentprograms/error_global_struct.oat" ]
+let my_tests =
+  [ "test/studentprograms/linked_list.oat", "a b c d e f g", "a b c d e f g 0"
+  ; "test/studentprograms/linked_list.oat", "hello from cs131", "hello from cs131 0"
+  ; "test/studentprograms/linked_list.oat", "", "Out of bounds index -1 for array length 01"
+  ]
+;;
 
 let student_local_tests : suite =
-  [ Test ("my unit tests", my_unit_tests)
-  ; Test ("my tests", typecheck_file_correct my_tests)
-  ; Test ("my error tests", typecheck_file_error my_error_tests)
-  ]
+  [ Test ("my unit tests", my_unit_tests); Test ("my tests", executed_oat_file my_tests) ]
 ;;
